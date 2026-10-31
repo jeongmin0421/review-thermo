@@ -11,9 +11,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import thermo
+from app import coupon, thermo
 from app.deps import get_predict
-from app.schemas import AnalyzeRequest, AnalyzeResponse
+from app.schemas import AnalyzeRequest, AnalyzeResponse, CouponRequest, CouponResponse
 
 app = FastAPI(title="리뷰 온도계 API", version="1.0.0")
 
@@ -51,6 +51,24 @@ def analyze(req: AnalyzeRequest, predict: Predict = Depends(get_predict)) -> Ana
         temperature=thermo.to_temperature(score),
         mismatch=thermo.is_mismatch(req.rating, label),
     )
+
+
+ALREADY_ISSUED = "이미 쿠폰을 발급한 리뷰입니다"
+
+
+@app.post("/v1/coupons/issue", response_model=CouponResponse)
+def issue_coupon(req: CouponRequest, predict: Predict = Depends(get_predict)) -> CouponResponse:
+    """2차: 리뷰 한 건 -> 사과/감사 쿠폰 발급 (같은 review_id는 한 번만)."""
+    if coupon.is_issued(req.review_id):
+        raise HTTPException(status_code=409, detail=ALREADY_ISSUED)
+    label = thermo.to_label(round(get_score(predict, req.text), 4))
+    chosen = coupon.choose_coupon(label, req.text)  # 규칙은 app/coupon.py
+    if chosen is None:
+        return CouponResponse(issued=False)
+    if not coupon.claim(req.review_id):  # AI를 기다리는 사이 같은 review_id가 먼저 발급된 경우
+        raise HTTPException(status_code=409, detail=ALREADY_ISSUED)
+    coupon_type, amount = chosen
+    return CouponResponse(issued=True, coupon_type=coupon_type, amount=amount, code=coupon.make_code(coupon_type))
 
 
 # 화면(static/)은 마지막에 "/" 로 연결해야 위의 API 경로가 먼저 잡힌다.
